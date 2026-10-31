@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Soundboard">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Soundboard</title>
+<style>
+  :root{--bg:#14181c;--panel:#1d242b;--line:#2c3640;--text:#eef2f5;--mute:#8a98a5;--accent:#ffb21e;color-scheme:dark}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--text);font-family:"Avenir Next",system-ui,sans-serif}
+  body{padding:max(16px,env(safe-area-inset-top)) 16px max(24px,env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+  h2{font-size:15px;font-weight:600;margin:24px 0 10px;color:var(--mute)}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px}
+  .row{display:flex;gap:8px;margin-bottom:10px}
+  input[type=text],input[type=url]{flex:1;min-width:0;background:var(--bg);border:1px solid var(--line);color:var(--text);border-radius:10px;padding:12px;font-size:16px}
+  button{font:inherit;background:var(--line);color:var(--text);border:0;border-radius:10px;padding:12px 16px;font-weight:600;cursor:pointer}
+  button.primary{background:var(--accent);color:#1a1200}
+  button:active{transform:scale(.97)}
+  button:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  #player{width:100%;aspect-ratio:16/9;border-radius:10px;overflow:hidden;background:#000;margin-bottom:10px}
+  #player iframe{width:100%;height:100%}
+  label.s{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--mute);margin-top:6px}
+  label.s input[type=range]{flex:1;accent-color:var(--accent)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:10px}
+  .fx{position:relative;min-height:84px;background:var(--panel);border:1px solid var(--line);border-radius:14px;font-size:16px;padding:12px;text-align:left;line-height:1.2}
+  .fx:active{background:var(--accent);color:#1a1200}
+  .fx .x{position:absolute;top:2px;right:4px;width:30px;height:30px;padding:0;background:none;color:var(--mute);font-size:18px}
+  .hint{font-size:13px;color:var(--mute);line-height:1.5;margin:8px 0 0}
+  #msg{font-size:13px;color:var(--accent);min-height:18px;margin-top:6px}
+</style>
+</head>
+<body>
+
+<h2>Background audio</h2>
+<div class="panel">
+  <div id="player"></div>
+  <div class="row">
+    <input id="yt" type="url" placeholder="Paste a YouTube link" inputmode="url" autocapitalize="off" autocorrect="off">
+    <button class="primary" id="load">Load</button>
+  </div>
+  <label class="s"><input type="checkbox" id="loop" checked> Repeat forever</label>
+  <label class="s">Volume <input type="range" id="bgvol" min="0" max="100" value="60"></label>
+  <label class="s"><input type="checkbox" id="awake"> Keep screen on</label>
+  <div id="msg"></div>
+</div>
+
+<h2>Sound effects</h2>
+<div class="panel">
+  <div class="row">
+    <button class="primary" id="pick" style="flex:1">Add sound files</button>
+    <input id="files" type="file" accept="audio/*,.mp3" multiple hidden>
+  </div>
+  <label class="s">Volume <input type="range" id="fxvol" min="0" max="100" value="100"></label>
+  <p class="hint">Pick one or more audio files from your phone. They’re saved inside this app, so you only add them once.</p>
+</div>
+<div class="grid" id="grid" style="margin-top:14px"></div>
+
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const $ = id => document.getElementById(id);
+const store = {
+  get(k, d){ try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch(e){ return d; } },
+  set(k, v){ try { localStorage.setItem(k, JSON.stringify(v)); } catch(e){} }
+};
+
+/* ---------- YouTube ---------- */
+let player = null, apiReady = false, pendingId = null;
+
+function videoId(s){
+  s = s.trim();
+  if (/^[\w-]{11}$/.test(s)) return s;
+  try {
+    const u = new URL(s);
+    if (u.hostname.includes('youtu.be')) return u.pathname.slice(1, 12);
+    if (u.searchParams.get('v')) return u.searchParams.get('v');
+    const m = u.pathname.match(/\/(shorts|embed|live)\/([\w-]{11})/);
+    if (m) return m[2];
+  } catch(e){}
+  return null;
+}
+
+window.onYouTubeIframeAPIReady = () => {
+  apiReady = true;
+  const saved = store.get('ytid', null);
+  if (saved){ $('yt').value = 'https://youtu.be/' + saved; make(saved); }
+};
+
+function make(id){
+  if (!apiReady){ pendingId = id; return; }
+  const loop = $('loop').checked;
+  if (player){ player.destroy(); player = null; }
+  const holder = document.createElement('div');
+  $('player').innerHTML = '';
+  $('player').appendChild(holder);
+  player = new YT.Player(holder, {
+    videoId: id,
+    playerVars: { playsinline: 1, loop: loop ? 1 : 0, playlist: loop ? id : undefined, rel: 0 },
+    events: {
+      onReady: e => e.target.setVolume(+$('bgvol').value),
+      onStateChange: e => { if (e.data === YT.PlayerState.ENDED && $('loop').checked) e.target.playVideo(); },
+      onError: () => { $('msg').textContent = 'This video can’t be played in an embed. Try another link.'; }
+    }
+  });
+}
+
+$('load').onclick = () => {
+  const id = videoId($('yt').value);
+  if (!id){ $('msg').textContent = 'That doesn’t look like a YouTube link.'; return; }
+  $('msg').textContent = '';
+  store.set('ytid', id);
+  make(id);
+};
+$('bgvol').oninput = () => player && player.setVolume && player.setVolume(+$('bgvol').value);
+$('loop').onchange = () => { const id = store.get('ytid', null); if (id) make(id); };
+
+/* ---------- Keep screen on ---------- */
+let lock = null;
+async function setLock(){
+  try {
+    if ($('awake').checked && 'wakeLock' in navigator) lock = await navigator.wakeLock.request('screen');
+    else if (lock){ await lock.release(); lock = null; }
+  } catch(e){ $('msg').textContent = 'Couldn’t keep the screen on.'; }
+}
+$('awake').onchange = setLock;
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && $('awake').checked) setLock(); });
+
+/* ---------- Sound effects (files saved in IndexedDB) ---------- */
+let fx = [];
+let persist = true;
+
+function dbOpen(){
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('soundboard', 1);
+    r.onupgradeneeded = () => r.result.createObjectStore('fx', { keyPath: 'id', autoIncrement: true });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function dbAll(){
+  const db = await dbOpen();
+  return new Promise((res, rej) => {
+    const q = db.transaction('fx').objectStore('fx').getAll();
+    q.onsuccess = () => res(q.result);
+    q.onerror = () => rej(q.error);
+  });
+}
+async function dbAdd(item){
+  const db = await dbOpen();
+  return new Promise((res, rej) => {
+    const q = db.transaction('fx', 'readwrite').objectStore('fx').add(item);
+    q.onsuccess = () => res(q.result);
+    q.onerror = () => rej(q.error);
+  });
+}
+async function dbDel(id){
+  const db = await dbOpen();
+  return new Promise((res, rej) => {
+    const q = db.transaction('fx', 'readwrite').objectStore('fx').delete(id);
+    q.onsuccess = () => res();
+    q.onerror = () => rej(q.error);
+  });
+}
+
+function render(){
+  const g = $('grid');
+  g.innerHTML = '';
+  if (!fx.length){
+    g.innerHTML = '<p class="hint" style="grid-column:1/-1">No effects yet. Tap Add sound files above.</p>';
+    return;
+  }
+  fx.forEach((f, i) => {
+    if (!f.url) f.url = URL.createObjectURL(f.blob);
+    const b = document.createElement('button');
+    b.className = 'fx';
+    b.textContent = f.name;
+    b.onclick = () => {
+      const a = new Audio(f.url);
+      a.volume = +$('fxvol').value / 100;
+      a.play().catch(() => { $('msg').textContent = 'That file couldn’t play. Try an .mp3 or .m4a file.'; });
+    };
+    const x = document.createElement('button');
+    x.className = 'x';
+    x.textContent = '×';
+    x.setAttribute('aria-label', 'Remove ' + f.name);
+    x.onclick = async ev => {
+      ev.stopPropagation();
+      try { if (f.id != null) await dbDel(f.id); } catch(e){}
+      URL.revokeObjectURL(f.url);
+      fx.splice(i, 1);
+      render();
+    };
+    b.appendChild(x);
+    g.appendChild(b);
+  });
+}
+
+$('pick').onclick = () => $('files').click();
+$('files').onchange = async () => {
+  $('msg').textContent = '';
+  for (const file of $('files').files){
+    const item = { name: file.name.replace(/\.[^.]+$/, ''), blob: file };
+    try { item.id = await dbAdd(item); }
+    catch(e){ persist = false; }
+    fx.push(item);
+  }
+  if (!persist) $('msg').textContent = 'These sounds work now but couldn’t be saved on this device.';
+  $('files').value = '';
+  render();
+};
+
+(async () => {
+  try { fx = await dbAll(); } catch(e){ persist = false; }
+  render();
+})();
+</script>
+</body>
+</html>
